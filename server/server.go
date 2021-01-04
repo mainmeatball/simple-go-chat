@@ -6,28 +6,37 @@ import (
 	"io"
 	"net"
 	"os"
-	"simpleGoChat/chat"
 	"strconv"
 	"sync"
 )
 
 type Server struct {
-	conn chat.ConnectionHandler
+	conn    *net.Conn
+	rCh     chan string
+	wCh     chan string
+	closeCh chan bool
 }
 
-func (connH *Server) StartSending() {
-	defer connH.conn.CloseConn()
+func (connH *Server) closeConn() {
+	(*connH.conn).Close()
+	connH.closeCh <- true
+}
 
-	fmt.Println("I'm a server and starting to send something.")
-	for {
-		msg := <-connH.conn.WCh
-		n, err := fmt.Fprintf(*connH.conn.Conn, msg)
-		if n == 0 || err != nil {
-			if err == io.EOF {
-				return
-			}
-		}
+func receivePort(args []string) (port int, ok bool) {
+	if len(args) > 2 {
+		fmt.Println("Too many command line arguments. Should specify only port.")
+		return 0, false
+	} else if len(args) < 2 {
+		fmt.Println("Port isn't specified as a command line argument. Default port 8080 will be used as a server application port.")
+		return 8080, true
 	}
+
+	port, err := strconv.Atoi(args[1])
+	if err != nil {
+		fmt.Println("Port entered as a command line argument is invalid. Couldn't convert it to an integer.")
+		return 0, false
+	}
+	return port, true
 }
 
 type SafeMap struct {
@@ -37,57 +46,66 @@ type SafeMap struct {
 
 var connMap = SafeMap{make(map[string]*net.Conn), &sync.Mutex{}}
 
+func (m *SafeMap) sendAll(msg string) {
+	m.mx.Lock()
+	defer m.mx.Unlock()
+	for _, conn := range connMap.m {
+		_, _ = (*conn).Write([]byte(msg))
+	}
+}
+
 func (m *SafeMap) get(key string) (*net.Conn, bool) {
 	m.mx.Lock()
 	defer m.mx.Unlock()
-	v, ex := m.m[chat.TrimNewLine(key)]
+	v, ex := m.m[trimNewLine(key)]
 	return v, ex
 }
 
 func (m *SafeMap) set(key string, c *net.Conn) {
 	m.mx.Lock()
 	defer m.mx.Unlock()
-	m.m[chat.TrimNewLine(key)] = c
+	m.m[trimNewLine(key)] = c
 }
 
 func (m *SafeMap) rm(key string) {
 	m.mx.Lock()
 	defer m.mx.Unlock()
-	delete(m.m, chat.TrimNewLine(key))
+	delete(m.m, trimNewLine(key))
 }
 
-func receiveName(r *bufio.Reader, conn *net.Conn) string {
-	name, err := r.ReadString('\n')
+func trimNewLine(s string) string {
+	if len(s) == 0 {
+		return s
+	}
+	if s[len(s)-1] == '\n' {
+		return s[:len(s)-1]
+	}
+	return s
+}
+
+func read(reader *bufio.Reader) (string, bool) {
+	message, err := reader.ReadString('\n')
 	if err != nil {
 		if err == io.EOF {
-			fmt.Printf("Connection closed for %v\n", (*conn).RemoteAddr())
-			return ""
+			return "", false
 		}
-		fmt.Println("Error occurred while reading new line from connection.")
+		return "", false
 	}
-	fmt.Println("Check if connection exists.")
-	if _, exists := connMap.get(name); exists == true {
-		fmt.Printf("Connection with %v exists!\n", name[:len(name)-1])
-		_, _ = (*conn).Write([]byte("exists\n"))
-		return receiveName(r, conn)
+	if trimNewLine(message) == "exit" {
+		return "", false
 	}
-	n, e := (*conn).Write([]byte("ok\n"))
-	if n == 0 || e != nil {
-		return ""
-	}
-	return name[:len(name)-1]
+	return message, true
 }
 
-func listenMessages(conn *net.Conn) {
-	reader := bufio.NewReader(*conn)
-	defer (*conn).Close()
+func (connH *Server) ListenFromRemote() {
+	reader := bufio.NewReader(*connH.conn)
+	defer (*connH.conn).Close()
 
-	name := receiveName(reader, conn)
+	name := receiveName(reader, connH.conn)
 	if len(name) == 0 {
-		fmt.Printf("Connection closed for %v\n", name)
 		return
 	}
-	connMap.set(name, conn)
+	connMap.set(name, connH.conn)
 	fmt.Printf("%v joined the server. Total connections: %v\n", name, len(connMap.m))
 
 	for {
@@ -104,13 +122,57 @@ func listenMessages(conn *net.Conn) {
 		}
 		fmt.Println(name + ": " + message)
 	}
-	fmt.Printf("Connection closed for %v\n", name)
 	connMap.rm(name)
 	fmt.Printf("%v left the server. Total connections: %v\n", name, len(connMap.m))
 }
 
+func listenFromConsole(wCh chan string, closeCh chan bool) {
+	reader := bufio.NewReader(os.Stdin)
+
+	for {
+		msg, ok := read(reader)
+		if !ok {
+			closeCh <- true
+			return
+		}
+		wCh <- msg
+	}
+}
+
+func startSending(wCh chan string) {
+	for {
+		msg := <-wCh
+		connMap.sendAll(msg)
+	}
+}
+
+func receiveName(r *bufio.Reader, conn *net.Conn) string {
+	name, err := r.ReadString('\n')
+	if err != nil {
+		if err == io.EOF {
+			return ""
+		}
+		fmt.Println("Error occurred while reading new line from connection.")
+	}
+	if _, exists := connMap.get(name); exists == true {
+		_, _ = (*conn).Write([]byte("exists\n"))
+		return receiveName(r, conn)
+	}
+	n, e := (*conn).Write([]byte("ok\n"))
+	if n == 0 || e != nil {
+		return ""
+	}
+	return name[:len(name)-1]
+}
+
+func waitClosing(closeCh chan bool) {
+	<-closeCh
+	fmt.Println("Server is closing! Bye!")
+	os.Exit(1)
+}
+
 func main() {
-	port, ok := chat.ReceivePort(os.Args)
+	port, ok := receivePort(os.Args)
 	if ok == false {
 		return
 	}
@@ -127,6 +189,10 @@ func main() {
 	wCh := make(chan string)
 	closeCh := make(chan bool)
 
+	go startSending(wCh)
+	go listenFromConsole(wCh, closeCh)
+	go waitClosing(closeCh)
+
 	for {
 		conn, err := ln.Accept()
 		if err != nil {
@@ -134,8 +200,7 @@ func main() {
 		}
 		fmt.Printf("Connection is established with %v\n", conn.RemoteAddr())
 
-		connH := &chat.ConnectionHandler{Conn: &conn, RCh: rCh, WCh: wCh, CloseCh: closeCh, S: nil}
-		connH.S = &Server{conn: *connH}
-		connH.Handle()
+		connH := &Server{&conn, rCh, wCh, closeCh}
+		go connH.ListenFromRemote()
 	}
 }
