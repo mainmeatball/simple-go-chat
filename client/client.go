@@ -7,6 +7,7 @@ import (
 	"net"
 	"os"
 	"strconv"
+	"strings"
 )
 
 type ConnectionHandler struct {
@@ -14,11 +15,26 @@ type ConnectionHandler struct {
 	RCh     chan string
 	WCh     chan string
 	CloseCh chan bool
+	name    string
 }
 
 func (connH *ConnectionHandler) CloseConn() {
 	(*connH.Conn).Close()
 	connH.CloseCh <- true
+}
+
+func parseMsg(msg string) (sender, key, body string, ok bool) {
+	i := strings.IndexByte(msg, ':')
+	if i == -1 {
+		return "", "", "", false
+	}
+	sender = msg[:i]
+	rest := strings.TrimSpace(msg[i+1:])
+	i = strings.IndexByte(rest, ':')
+	if i == -1 {
+		return sender, "", rest, true
+	}
+	return sender, rest[:i], strings.TrimSpace(rest[i+1:]), true
 }
 
 func (connH *ConnectionHandler) ListenFromRemote() {
@@ -30,9 +46,16 @@ func (connH *ConnectionHandler) ListenFromRemote() {
 		if !ok {
 			return
 		}
-		fmt.Println("Server: " + TrimNewLine(message))
-		if i == 0 {
-			connH.RCh <- message
+		s, key, msg, ok := parseMsg(message)
+		if ok == false {
+			continue
+		}
+
+		if key != "hidden" {
+			fmt.Println(s + ": " + msg)
+		}
+		if key == "hidden" {
+			connH.RCh <- msg
 		}
 	}
 }
@@ -56,6 +79,9 @@ func (connH *ConnectionHandler) StartSending() {
 
 	for {
 		msg := <-connH.WCh
+		if len(connH.name) != 0 {
+			msg = connH.name + ": " + msg
+		}
 		n, err := fmt.Fprintf(*connH.Conn, msg)
 		if n == 0 || err != nil {
 			if err == io.EOF {
@@ -84,9 +110,9 @@ func (connH *ConnectionHandler) read(reader *bufio.Reader) (string, bool) {
 func login(connH *ConnectionHandler, r *bufio.Reader) (name string) {
 	fmt.Print("Please, introduce yourself. Enter your name: ")
 	var response string
-	for response != "ok\n" {
+	for response != "ok" {
 		n, err := r.ReadString('\n')
-		name = n
+		name = TrimNewLine(n)
 		if err != nil {
 			if err == io.EOF {
 				fmt.Printf("Connection closed for %v", (*connH.Conn).RemoteAddr())
@@ -94,14 +120,15 @@ func login(connH *ConnectionHandler, r *bufio.Reader) (name string) {
 			}
 			fmt.Println("Error occurred while reading new line from connection.")
 		}
-		connH.WCh <- name
+		connH.WCh <- name + "\n"
 		response = <-connH.RCh
-		if response == "exists\n" {
+		if response == "exists" {
 			fmt.Print("Username is taken. Please, choose another username: ")
 			continue
 		}
 	}
-	fmt.Printf("Welcome, %v!\n", name[:len(name)-1])
+	fmt.Printf("Welcome, %v!\n", name)
+	connH.name = name
 	return
 }
 
