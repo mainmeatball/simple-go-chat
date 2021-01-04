@@ -95,7 +95,6 @@ func login(connH *ConnectionHandler, r *bufio.Reader) (name string) {
 			fmt.Println("Error occurred while reading new line from connection.")
 		}
 		connH.WCh <- name
-		fmt.Printf("Name '%v' was sent to server. Waiting for response from server.\n", name[:len(name)-1])
 		response = <-connH.RCh
 		if response == "exists\n" {
 			fmt.Print("Username is taken. Please, choose another username: ")

@@ -103,7 +103,6 @@ func (connH *Server) ListenFromRemote() {
 
 	name := receiveName(reader, connH.conn)
 	if len(name) == 0 {
-		fmt.Printf("Connection closed for %v\n", name)
 		return
 	}
 	connMap.set(name, connH.conn)
@@ -123,7 +122,6 @@ func (connH *Server) ListenFromRemote() {
 		}
 		fmt.Println(name + ": " + message)
 	}
-	fmt.Printf("Connection closed for %v\n", name)
 	connMap.rm(name)
 	fmt.Printf("%v left the server. Total connections: %v\n", name, len(connMap.m))
 }
@@ -152,14 +150,11 @@ func receiveName(r *bufio.Reader, conn *net.Conn) string {
 	name, err := r.ReadString('\n')
 	if err != nil {
 		if err == io.EOF {
-			fmt.Printf("Connection closed for %v\n", (*conn).RemoteAddr())
 			return ""
 		}
 		fmt.Println("Error occurred while reading new line from connection.")
 	}
-	fmt.Println("Check if connection exists.")
 	if _, exists := connMap.get(name); exists == true {
-		fmt.Printf("Connection with %v exists!\n", name[:len(name)-1])
 		_, _ = (*conn).Write([]byte("exists\n"))
 		return receiveName(r, conn)
 	}
